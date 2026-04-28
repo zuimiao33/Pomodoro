@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -30,8 +30,26 @@ def _computed_elapsed(session: PomodoroSession) -> int:
     return max(0, elapsed)
 
 
-def _to_read_model(session: PomodoroSession) -> PomodoroSessionRead:
+def _complete_if_finished(session: PomodoroSession) -> bool:
+    if session.status != SessionStatus.RUNNING:
+        return False
+
     elapsed = _computed_elapsed(session)
+    if elapsed < session.duration_sec:
+        return False
+
+    last_started_at = _as_utc(session.last_started_at)
+    remaining_at_last_start = max(0, session.duration_sec - session.elapsed_sec)
+    session.elapsed_sec = session.duration_sec
+    session.status = SessionStatus.COMPLETED
+    session.last_started_at = None
+    session.end_at = (last_started_at + timedelta(seconds=remaining_at_last_start)) if last_started_at else utcnow()
+    return True
+
+
+def _to_read_model(session: PomodoroSession) -> PomodoroSessionRead:
+    _complete_if_finished(session)
+    elapsed = min(session.duration_sec, _computed_elapsed(session))
     remaining = max(0, session.duration_sec - elapsed)
     return PomodoroSessionRead(
         id=session.id,
@@ -47,19 +65,27 @@ def _to_read_model(session: PomodoroSession) -> PomodoroSessionRead:
     )
 
 
+def _get_active_session(db: Session, user_id: int) -> PomodoroSession | None:
+    return db.scalar(
+        select(PomodoroSession).where(
+            PomodoroSession.user_id == user_id,
+            PomodoroSession.status.in_([SessionStatus.RUNNING, SessionStatus.PAUSED]),
+            PomodoroSession.end_at.is_(None),
+        )
+    )
+
+
 @router.post("/start", response_model=PomodoroSessionRead, status_code=status.HTTP_201_CREATED)
 def start_session(
     payload: PomodoroStartRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    active = db.scalar(
-        select(PomodoroSession).where(
-            PomodoroSession.user_id == current_user.id,
-            PomodoroSession.status.in_([SessionStatus.RUNNING, SessionStatus.PAUSED]),
-            PomodoroSession.end_at.is_(None),
-        )
-    )
+    active = _get_active_session(db, current_user.id)
+    if active and _complete_if_finished(active):
+        db.commit()
+        active = None
+
     if active:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已有进行中的番茄钟")
 
@@ -93,6 +119,11 @@ def pause_session(current_user: User = Depends(get_current_user), db: Session = 
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="没有进行中的番茄钟")
 
+    if _complete_if_finished(session):
+        db.commit()
+        db.refresh(session)
+        return _to_read_model(session)
+
     session.elapsed_sec = _computed_elapsed(session)
     session.last_started_at = None
     session.status = SessionStatus.PAUSED
@@ -122,13 +153,7 @@ def resume_session(current_user: User = Depends(get_current_user), db: Session =
 
 @router.post("/finish", response_model=PomodoroSessionRead)
 def finish_session(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    session = db.scalar(
-        select(PomodoroSession).where(
-            PomodoroSession.user_id == current_user.id,
-            PomodoroSession.status.in_([SessionStatus.RUNNING, SessionStatus.PAUSED]),
-            PomodoroSession.end_at.is_(None),
-        )
-    )
+    session = _get_active_session(db, current_user.id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="没有活动中的番茄钟")
 
@@ -143,13 +168,13 @@ def finish_session(current_user: User = Depends(get_current_user), db: Session =
 
 @router.get("/current", response_model=PomodoroSessionRead | None)
 def get_current_session(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    session = db.scalar(
-        select(PomodoroSession).where(
-            PomodoroSession.user_id == current_user.id,
-            PomodoroSession.status.in_([SessionStatus.RUNNING, SessionStatus.PAUSED]),
-            PomodoroSession.end_at.is_(None),
-        )
-    )
+    session = _get_active_session(db, current_user.id)
     if not session:
         return None
+
+    finished = _complete_if_finished(session)
+    if finished:
+        db.commit()
+        db.refresh(session)
+
     return _to_read_model(session)

@@ -36,17 +36,20 @@ type PomodoroSession = {
   status: "running" | "paused" | "completed" | "cancelled";
 };
 
-const remainingSec = ref(0);
+const remainingSec = ref(25 * 60);
 const durationSec = ref(25 * 60);
 const tip = ref("点击开始，进入专注。");
 const isError = ref(false);
 const status = ref<"idle" | PomodoroSession["status"]>("idle");
+
 let timer: number | null = null;
+let tickCount = 0;
+let finishing = false;
 
 const display = computed(() => {
-  const m = Math.floor(remainingSec.value / 60);
-  const s = remainingSec.value % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  const minutes = Math.floor(remainingSec.value / 60);
+  const seconds = remainingSec.value % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 });
 
 const progress = computed(() => {
@@ -77,12 +80,18 @@ function setPreset(minutes: number) {
   }
   durationSec.value = minutes * 60;
   remainingSec.value = durationSec.value;
+  status.value = "idle";
   tip.value = `已选择 ${minutes} 分钟。`;
   isError.value = false;
 }
 
 function applySession(current: PomodoroSession | null) {
   if (!current) {
+    if (status.value === "running" || status.value === "completed") {
+      status.value = "completed";
+      remainingSec.value = 0;
+      return;
+    }
     status.value = "idle";
     remainingSec.value = durationSec.value;
     return;
@@ -105,6 +114,7 @@ async function syncCurrent() {
 
 async function start() {
   try {
+    finishing = false;
     await api.startPomodoro(durationSec.value);
     await syncCurrent();
     tip.value = "番茄钟已开始。";
@@ -129,6 +139,7 @@ async function pause() {
 
 async function resume() {
   try {
+    finishing = false;
     await api.resumePomodoro();
     await syncCurrent();
     tip.value = "番茄钟已继续。";
@@ -152,15 +163,38 @@ async function finish() {
   }
 }
 
+async function finishWhenTimeIsUp() {
+  if (finishing) {
+    return;
+  }
+  finishing = true;
+  try {
+    await api.currentPomodoro();
+    status.value = "completed";
+    remainingSec.value = 0;
+    tip.value = "时间到，本次番茄钟已完成。";
+    isError.value = false;
+  } catch (error) {
+    isError.value = true;
+    tip.value = error instanceof Error ? error.message : "同步失败";
+  }
+}
+
 onMounted(async () => {
-  remainingSec.value = durationSec.value;
   await syncCurrent();
   timer = window.setInterval(async () => {
     if (status.value === "running" && remainingSec.value > 0) {
       remainingSec.value -= 1;
+      if (remainingSec.value === 0) {
+        await finishWhenTimeIsUp();
+      }
     }
-    await syncCurrent();
-  }, 5000);
+
+    tickCount += 1;
+    if (tickCount % 5 === 0 && remainingSec.value > 0) {
+      await syncCurrent();
+    }
+  }, 1000);
 });
 
 onUnmounted(() => {

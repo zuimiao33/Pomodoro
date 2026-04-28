@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
     cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
+    cors_origin_regex: str = r"https?://(127\.0\.0\.1|localhost)(:\d+)?"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

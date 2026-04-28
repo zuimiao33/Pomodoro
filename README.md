@@ -27,7 +27,7 @@ npm install
 3. 启动前后端服务
 
 ```bash
-start-dev.cmd
+.\start-dev.cmd
 ```
 
 4. 打开应用

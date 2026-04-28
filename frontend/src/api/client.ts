@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000/api/v1";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
 const AUTH_CHANGED_EVENT = "todo-auth-changed";
 
 export function getAccessToken() {
@@ -39,18 +39,26 @@ async function request(path: string, options: RequestInit = {}) {
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+  } catch {
+    throw new Error("无法连接后端服务，请确认后端已启动。");
+  }
+
   if (response.status === 401) {
     clearAuth();
   }
   if (!response.ok) {
+    let message = `请求失败：${response.status}`;
     try {
       const payload = await response.json();
-      throw new Error(payload.detail || `请求失败：${response.status}`);
+      message = payload.detail || message;
     } catch {
-      const text = await response.text();
-      throw new Error(text || `请求失败：${response.status}`);
+      // Keep the generic status message when the response body is not JSON.
     }
+    throw new Error(message);
   }
   if (response.status === 204) {
     return null;

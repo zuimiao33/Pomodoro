@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,10 +14,19 @@ from app.utils.time import utcnow
 router = APIRouter()
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _computed_elapsed(session: PomodoroSession) -> int:
     elapsed = session.elapsed_sec
-    if session.status == SessionStatus.RUNNING and session.last_started_at:
-        elapsed += int((utcnow() - session.last_started_at).total_seconds())
+    last_started_at = _as_utc(session.last_started_at)
+    if session.status == SessionStatus.RUNNING and last_started_at:
+        elapsed += int((utcnow() - last_started_at).total_seconds())
     return max(0, elapsed)
 
 
@@ -30,9 +41,9 @@ def _to_read_model(session: PomodoroSession) -> PomodoroSessionRead:
         duration_sec=session.duration_sec,
         elapsed_sec=elapsed,
         remaining_sec=remaining,
-        start_at=session.start_at,
-        last_started_at=session.last_started_at,
-        end_at=session.end_at,
+        start_at=_as_utc(session.start_at) or utcnow(),
+        last_started_at=_as_utc(session.last_started_at),
+        end_at=_as_utc(session.end_at),
     )
 
 
